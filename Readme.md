@@ -26,6 +26,28 @@ Para descargar el plugin identifica la versión de tu plugin y accede al siguien
 - [Prestashop 8](https://github.com/factura-com/prestashop/tree/Prestashop8)
 - [Prestashop 1.7](https://github.com/factura-com/prestashop/tree/Prestashop1.7)
 
+## Instalación
+
+### Pasos de instalación
+- Descarga el archivo ZIP del módulo
+- Accede al back office de PrestaShop
+- Ve a Módulos > Gestor de módulos
+- Haz clic en "Subir un módulo"
+- Selecciona el archivo ZIP descargado
+- Una vez instalado, configura el módulo con tus credenciales de factura.com
+- Configuración del módulo
+
+### Parámetros de configuración
+- API Key: Clave de API de tu cuenta factura.com
+- Secret Key: Clave secreta de tu cuenta factura.com
+- Serie de facturación: Serie que se utilizará para las facturas
+- Uso CFDI: Tipo de uso fiscal (G01, G02, G03, etc.)
+- Modo Sandbox: Para pruebas en entorno de desarrollo
+- Colores personalizados: Personalización visual del módulo
+- Encabezado personalizado: Información adicional en las facturas
+- Envío de emails: Configuración automática o manual
+- Días de facturación: Restricción temporal para facturación
+
 ## Documentación
 Aqui podras encontrar el manual de configuración para el plugin en el sitio de **factura.com**
 
