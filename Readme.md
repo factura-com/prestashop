@@ -22,9 +22,9 @@ Diseñado para ser compatible con **PrestaShop 1.7, 8.x y 9.x**, cumpliendo con 
 ## Descarga
 Para descargar el plugin identifica la versión de tu plugin y accede al siguiente enlace segun tu caso
 
-- [Prestashop 9](#)
-- [Prestashop 8](#)
-- [Prestashop 1.7](#)
+- [Prestashop 9](https://github.com/factura-com/prestashop/tree/Prestashop9)
+- [Prestashop 8](https://github.com/factura-com/prestashop/tree/Prestashop8)
+- [Prestashop 1.7](https://github.com/factura-com/prestashop/tree/Prestashop1.7)
 
 ## Documentación
 Aqui podras encontrar el manual de configuración para el plugin en el sitio de **factura.com**
