@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<module>
+    <name>facturapuntocom</name>
+    <displayName><![CDATA[Factura.com]]></displayName>
+    <version><![CDATA[4.0.0]]></version>
+    <description><![CDATA[This module allows you to create your invoices through the service of factura.com]]></description>
+    <author><![CDATA[Factura.com]]></author>
+    <tab><![CDATA[billing_invoicing]]></tab>
+	<confirmUninstall><![CDATA[Are you sure you want to uninstall the plugin? Your invoices are secure on factura.com but you might not be able to keep your configuration.]]></confirmUninstall>
+    <is_configurable>1</is_configurable>
+    <need_instance>0</need_instance>
+</module>

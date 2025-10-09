@@ -1,0 +1,701 @@
+<?php
+/**
+* 2025 FACTURA PUNTO COM SAPI de CV
+*
+* NOTICE OF LICENSE
+*
+* This source file is subject to License
+* It is also available through the world-wide-web at this URL:
+* http://factura.com
+* If you did not receive a copy of the license and are unable to
+* obtain it through the world-wide-web, please send an email
+* to apps@factura.com so we can send you a copy immediately.
+*
+*  @author factura.com <apps@factura.com>
+*  @copyright  2025 Factura Punto Com
+*  International Registered Trademark & Property of factura.com
+*/
+
+include_once dirname(__FILE__).'/curls.php';
+
+class FacturapuntocomProcessModuleFrontController extends ModuleFrontController
+{
+    public $products_invoice = array();
+    public $order_save;
+
+    /**
+     * Check for RFC validity
+     *
+     * @param string $rfc Moral and Fisica person
+     * @return array Array with 'valid' boolean and 'message' string
+     */
+    private function isRfcValid($rfc)
+    {
+        if (empty($rfc)) {
+            return array('valid' => false, 'message' => 'RFC no puede estar vacío.');
+        }
+        
+        if (!preg_match('/^[\p{L}&]{3,4}\d{6}[\p{L}0-9&]{3}$/u', $rfc)) {
+            return array('valid' => false, 'message' => 'El RFC debe tener un formato válido y/o podría ser incorrecto, por favor verifica este campo.');
+        }
+        
+        return array('valid' => true, 'message' => 'RFC válido.');
+    }
+
+    public function __construct()
+    {
+        parent::__construct();
+        $this->context = Context::getContext();
+    }
+
+    public function initContent()
+    {
+        parent::initContent();
+        $this->ajax = true;
+    }
+
+    public function displayAjaxPostProcess()
+    {
+        $errors = array();
+
+        if (!($email = trim(Tools::getValue('email'))) || !Validate::isEmail($email)) {
+            $errors[] = array('email' => 'Email incorrecto.');
+        } else {
+            $string = Tools::getValue('email');
+            if (Customer::customerExists($string)) {
+                $customers = Customer::getCustomersByEmail(Tools::getValue('email'));
+                foreach ($customers as &$customer) {
+                    $orders = new Order();
+                    $array_orders = $orders->getCustomerOrders($customer['id_customer']);
+                    if ($array_orders) {
+                        foreach ($array_orders as &$order) {
+                            if ((trim(Tools::getValue('order'))) == ($orders->getUniqReferenceOf($order['id_order']))) {
+                                $status = true;
+                            }
+                        }
+                        if (!isset($status)) {
+                            $errors[] = array(
+                              'order' => 'El pedido no coincide con la cuenta del correo electrónico proporcionado.'
+                            );
+                        }
+                    } else {
+                        $errors[] = array('order' => 'El cliente no tiene ordenes generadas');
+                    }
+                }
+                
+            } else {
+                $errors[] = array('order' => 'El cliente no se encuentra logueado o no está registrado en la tienda.');
+            }
+        }
+        
+        $rfc = trim(Tools::getValue('rfc'));
+        $rfcValidation = $this->isRfcValid($rfc);
+        
+        if (!$rfcValidation['valid']) {
+            $errors[] = array('rfc' => $rfcValidation['message']);
+        }
+
+        $order_invoice = trim(Tools::getValue('order'));
+
+        //method order state payment accepted
+        $query = new DbQuery();
+        $query->select('o.reference, o.id_order, h.id_order_state, h.id_order_history');
+        $query->from('orders', 'o');
+        $query->join('LEFT JOIN`'._DB_PREFIX_.'order_history` h ON o.`id_order` = h.`id_order`');
+        $query->where('o.reference = "'.pSQL($order_invoice).'"');
+        $query->orderBy('id_order_history DESC');
+        $result = Db::getInstance(_PS_USE_SQL_SLAVE_)->executeS($query);
+        
+        // --- method order state --
+        $count_ord = 0;
+        $valid_order_states = array(
+            //'1', // Awaiting check payment
+            '2', // Payment accepted
+            //'3', // Processing in progress
+            // '4', // Shiped
+            // '5', // Delivered
+            // '6', // Canceled
+            // '7', // Refunded
+            // '8', // Payment error
+            // '9', // On backorder (paid)
+            // '10', // Awaiting bank wire payment
+            // '11', // Remote payment accepted
+            // '12', // On backorder (npt paid)
+            // '13', // Awaiting Cash On Delivery validation
+        ); // Estados válidos para facturación posible implementacion donde el cliente decide cuales usar
+
+        foreach ($result as &$row) {
+            if ($count_ord == 0) {
+              if (!in_array($row['id_order_state'], $valid_order_states)) {
+                  $errors[] = array('invoice' => 'LA ORDEN NO SE PUEDE FACTURAR, ya que no se encuentra liberada.');
+              }
+            }
+          $count_ord ++;
+        }
+
+        // --- end method order state ---
+
+        //method days invoice
+        //var_dump($this->module->days);
+        if ($this->module->days != "0") {
+            $query = new DbQuery();
+            $query->select('o.reference, o.id_order, i.id_order_invoice, i.date_add');
+            $query->from('orders', 'o');
+            $query->join('LEFT JOIN`'._DB_PREFIX_.'order_invoice` i ON o.`id_order` = i.`id_order`');
+            $query->where('o.reference = "'.pSQL($order_invoice).'"');
+            $query->groupBy('id_order');
+            $days_result = Db::getInstance(_PS_USE_SQL_SLAVE_)->executeS($query);
+
+            foreach ($days_result as &$row) {
+                // $date_invoice = date_create($row['date_add']);
+                $to_date =  date_create(date("Y-m-d H:i:s"));
+
+                $date_new_invoice = new DateTime($row['date_add']);
+                $date_new_invoice->add(new DateInterval('P1M'));
+                $date_new_invoice->setDate($date_new_invoice->format('Y'), $date_new_invoice->format('m'), 01);
+
+                if ($to_date > $date_new_invoice) {
+                    $date_new_invoice->add(new DateInterval('P'.$this->module->days.'D'));
+                    if ($to_date >= $date_new_invoice) {
+                        $errors[] = array('days' => 'LA ORDEN NO SE PUEDE FACTURAR,
+                        los días disponibles para realizar la factura después del mes han expirado.');
+                    }
+                }
+            }
+        }
+        // --- end method order invoice ---
+
+        if (empty($errors)) {
+            return false;
+        } else {
+            return die(json_encode($errors));
+        }
+    }
+
+/*
+*@params  data form one
+*@return Object json API
+*/
+    public function displayAjaxEntryOne()
+    {
+        $customerRfc = Tools::getValue('rfc');
+        $url_aux = ($this->module->checkbox_dev == 0) ? $this->module->urlapi : $this->module->urlapi_dev;
+        $url = $url_aux.'clients/'.$customerRfc;
+        $keyapi = $this->module->keyapi;
+        $keysecret = $this->module->keysecret;
+        $request = 'get';
+
+        //agregar die por cambio en curl
+        return die(Curls::frontCurl($url, $request, $keyapi, $keysecret));
+    }
+
+    public function displayAjaxClientDetail()
+    {
+        $params = array(
+          'nombre' => Tools::getValue('contact-nombre'),
+          'apellidos' => Tools::getValue('contact-apellidos'),
+          'regimen' => Tools::getValue('data-regimen'),
+          'email' => Tools::getValue('contact-email'),
+          'telefono' => Tools::getValue('contact-telefono'),
+          'razons' => Tools::getValue('data-razonsocial'),
+          'rfc' => Tools::getValue('data-rfc'),
+          'calle' => Tools::getValue('data-calle'),
+          'numero_exterior' => Tools::getValue('data-exterior'),
+          'numero_interior' => Tools::getValue('data-interior'),
+          'codpos' => Tools::getValue('data-cp'),
+          'colonia' => Tools::getValue('data-colonia'),
+          'ciudad' => Tools::getValue('data-ciudad'),
+          'estado' => Tools::getValue('data-delegacion'),
+        );
+     
+        $url_aux = ($this->module->checkbox_dev == 0) ? $this->module->urlapi : $this->module->urlapi_dev;
+
+        if (Tools::getValue('action-api') != 'create') {
+            $UID = Tools::getValue('UID');
+            $url = $url_aux.'clients/'.$UID.'/update';
+            $keyapi = $this->module->keyapi;
+            $keysecret = $this->module->keysecret;
+            $request = 'post';
+        } else {
+            $url = $url_aux.'clients/create';
+            $keyapi = $this->module->keyapi;
+            $keysecret = $this->module->keysecret;
+            $request = 'post';
+        }
+
+          //agregar die por cambio en curl
+          return die(Curls::frontCurl($url, $request, $keyapi, $keysecret, $params));
+    }
+
+    public function displayAjaxOrderDetail()
+    {
+        $array = array();
+        $data = trim(Tools::getValue('order'));
+        $this->context->cookie->__unset('Order');
+        $this->context->cookie->__unset('Discount');
+
+        $sql = 'SELECT id_order, total_products, total_products_wt, total_discounts_tax_excl, total_discounts 
+        FROM '._DB_PREFIX_.'orders WHERE reference="'.pSQL($data).'"';
+        if ($results = Db::getInstance()->executeS($sql)) {
+            foreach ($results as $row) {
+                $order_customer = $row['id_order'];
+                $this->context->cookie->__set('Order', $row['id_order']);
+                $this->context->cookie->__set('Discount', $row['total_discounts_tax_excl']);
+                $subtotal_order = $row['total_products'];
+                $total_order = $row['total_products_wt'];
+                $discount_excl = $row['total_discounts_tax_excl'];
+                $discount = $row['total_discounts'];
+            }
+        }
+
+        $order_id = (int) $order_customer;
+        $order = new Order($order_id);
+        $products = $order->getProducts();
+
+
+
+        foreach ($products as &$product) {
+            $unit_price = (float) $product['unit_price_tax_excl'];
+            $total_price = (float) $product['total_price_tax_excl'];
+
+            $array['products'][] = array(
+              'cantidad' => $product['product_quantity'],
+              'unidad' => 'Pieza',
+              'concept' => $product['product_name'],
+              'precio' => Tools::ps_round($unit_price, 2),
+              'subtotal' => Tools::ps_round($total_price, 2),
+            );
+        }
+
+        //nuevo método para calcular gastos de envío
+        $query = new DbQuery();
+        $query->select('o.id_order, c.shipping_cost_tax_excl, c.shipping_cost_tax_incl');
+        $query->from('orders', 'o');
+        $query->join('LEFT JOIN`'._DB_PREFIX_.'order_carrier` c ON o.`id_order` = c.`id_order`');
+        $query->where('o.reference = "'.pSQL($data).'"');
+
+        if ($result_carrier = Db::getInstance(_PS_USE_SQL_SLAVE_)->executeS($query)) {
+            foreach ($result_carrier as $carrier) {
+                $price = (float) $carrier['shipping_cost_tax_excl'];
+                $round = Tools::ps_round($price, 2);
+
+                if ($carrier['shipping_cost_tax_excl'] != '0') {
+                    $subtotal_order += $carrier['shipping_cost_tax_excl'];
+                    $total_order += $carrier['shipping_cost_tax_incl'];
+                    $array['products'][] = array(
+                      'cantidad' => 1,
+                      'unidad' => 'NA',
+                      'concept' => 'Costo de envío',
+                      'precio' => $round,
+                      'subtotal' => $round,
+                      );
+                }
+            }
+        }
+        //var_dump($result_carrier);
+       /* $iva = Tools::ps_round($subtotal_order * .16, 6);
+        $array['totals'][] = array(
+          'subtotal' => Tools::ps_round($subtotal_order, 6),
+          'iva' => $iva,
+          'total' => Tools::ps_round($total_order + $iva, 6),
+        );*/
+     
+        //add discounts
+        if($discount_excl > 0) {
+          $total_full = $total_order - $discount;
+          $subtotal_full = $subtotal_order + ($discount - $discount_excl);
+        } else {
+          $total_full = $total_order;
+          $subtotal_full = $subtotal_order;
+        }
+     
+        $array['totals'][] = array(
+            'subtotal' => Tools::ps_round($subtotal_order, 2),
+            'iva' => Tools::ps_round($total_order - $subtotal_full, 2),
+            'total' => Tools::ps_round($total_full, 2),
+          );
+     
+        $url_aux = ($this->module->checkbox_dev == 0) ? $this->module->urlapi : $this->module->urlapi_dev;
+  
+        $url = $url_aux.'current/account';
+        $keyapi = $this->module->keyapi;
+        $keysecret = $this->module->keysecret;
+        $request = 'get';
+
+        //agregar die por cambio en curl
+        $business = json_decode(Curls::frontCurl($url, $request, $keyapi, $keysecret));
+
+        if ($business->status != 'error') {
+            $bus = $business->data;
+            $array['business'][] = array(
+            'nombre' => $bus->razon_social,
+            'rfc' => $bus->rfc,
+            'direccion' => $bus->calle.' # '.$bus->exterior,
+            'colonia' => $bus->colonia,
+            'ciudad' => $bus->ciudad,
+            'email' => $bus->email,
+            );
+        }
+     
+        //agregar el total de descuentos
+        $array['descuentos'] = array('descuento' => Tools::ps_round($discount_excl, 2));
+        //agregar el uso cdfi
+        $array['uso_cfdi'] = array ('id_uso' => $this->module->u_cfdi);
+
+        //Cookies::saveCookie('order', $array['products']);
+
+        return die(json_encode($array));
+    }
+
+    public function displayAjaxInvoice()
+    {
+        $products_invoice = array();
+        $flag_discount = false;
+        $emptyDiscount = false;  //bandera para indicar que hay descuento a aplicar
+        $order_id = (int) $this->context->cookie->Order;
+        $discount = (float) $this->context->cookie->Discount;
+        $order = new Order($order_id);
+        $products = $order->getProducts();
+        $url_aux = ($this->module->checkbox_dev == 0) ? $this->module->urlapi : $this->module->urlapi_dev;
+        $in = 0;
+        $productosConError = [];
+
+        foreach ($products as &$product) {
+            $unit_price = (float) $product['unit_price_tax_excl'];
+            $total_price = (float) $product['total_price_tax_excl'];
+
+            //query para obtener los atributos SAT del producto
+            $querySAT = new DbQuery();
+            $querySAT->select('psfp.id_product, psfl.name, psfv.value');
+            $querySAT->from('feature_product', 'psfp');
+            $querySAT->join('INNER JOIN`'._DB_PREFIX_.'feature_lang` psfl ON psfl.`id_feature` = psfp.`id_feature` AND psfl.`name` IN ("F_ClaveProdServ", "F_ClaveUnidad", "F_Unidad")');
+            $querySAT->join('INNER JOIN`'._DB_PREFIX_.'feature_value_lang` psfv ON psfv.`id_feature_value` = psfp.`id_feature_value`');
+            $querySAT->where('psfp.`id_product` = "'.pSQL($product['id_product']).'"');
+            $querySAT->groupBy('psfl.name');
+            $resultSAT = Db::getInstance(_PS_USE_SQL_SLAVE_)->executeS($querySAT);
+
+            $f_prodserv = null;
+            $f_claveunidad = null;
+            $f_unidad = null;
+
+            //decidir en los items las características
+            foreach ($resultSAT as &$feature) {
+              switch ($feature['name']) {
+                case 'F_ClaveProdServ':
+                  $f_prodserv = $feature['value'];
+                  break;
+                case 'F_ClaveUnidad':
+                  $f_claveunidad = $feature['value'];
+                  break;
+                case 'F_Unidad':
+                  $f_unidad = $feature['value'];
+                  break;
+              }
+            }
+
+            if (empty($f_prodserv) || empty($f_claveunidad) || empty($f_unidad)) {
+                return die(json_encode(array('response' => 'error', 'message' => 'Uno o más de los productos que intentas facturar no contienen los datos requeridos por el SAT para ser procesados. Por favor, comunícate con la tienda para que puedan apoyarte a actualizar tus productos.')));
+            }
+            
+            //Agregar descuentos en el item productos
+            if($flag_discount) {
+              $set_discount = 0;
+            } else {
+                if($discount == 0){
+                    $set_discount = 0;
+                    $flag_discount = true;
+                } else if ($discount > $unit_price * $product['product_quantity']){
+                    $set_discount = ($unit_price * $product['product_quantity'])-0.01; //se evita tener campo base traslado igual a 0
+                    $discount -= ($unit_price * $product['product_quantity'])-0.01;
+                    $emptyDiscount = true;
+                } else if($discount == $unit_price * $product['product_quantity']){
+                    $set_discount = ($unit_price * $product['product_quantity'])-0.01; //se evita tener campo base traslado igual a 0
+                    $discount = 0;
+                    $emptyDiscount = true;
+                } else {
+                    $set_discount = $discount;
+                    $discount = 0;
+                    $emptyDiscount = true;
+                }
+            }
+         
+            //armar los impuestos por producto
+            switch ($product['tax_rate']) {
+              case 16:
+                $base_calc = (Tools::ps_round($unit_price, 2) * $product['product_quantity']) - $set_discount;
+                $decimas = explode(".", $base_calc);
+
+                //verificamos que no exceda el máximo de decimales
+                if(isset($decimas[1]) && strlen($decimas[1]) > 6) {
+                    $base_calc = round($base_calc, 6);
+                }
+                $taxes_product[] = array(
+                  'Base' => $base_calc,
+                  'Impuesto' => '002',
+                  'TipoFactor' => 'Tasa',
+                  'TasaOCuota' => '0.16',
+                  'Importe' => Tools::ps_round($base_calc * .16, 6)
+                );
+                $traslados = array('Traslados' => $taxes_product);
+              break;
+
+              case 8:
+                $base_calc = (Tools::ps_round($unit_price, 2) * $product['product_quantity']) - $set_discount;
+                $decimas = explode(".", $base_calc);
+
+                //verificamos que no exceda el máximo de decimales
+                if(isset($decimas[1]) && strlen($decimas[1]) > 6) {
+                    $base_calc = round($base_calc, 6);
+                }
+                $taxes_product[] = array(
+                  'Base' => $base_calc,
+                  'Impuesto' => '002',
+                  'TipoFactor' => 'Tasa',
+                  'TasaOCuota' => '0.08',
+                  'Importe' => Tools::ps_round($base_calc * .08, 6)
+                );
+                $traslados = array('Traslados' => $taxes_product);
+              break;
+
+              default:
+                $traslados = [];
+                break;
+            }
+
+            $taxes_product = null;
+
+            $products_invoice[] = array(
+              'ClaveProdServ' => $f_prodserv,
+              'ClaveUnidad' => $f_claveunidad,
+              'Unidad' => $f_unidad,
+              'Cantidad' => $product['product_quantity'],
+              'Descripcion' => $product['product_name'],
+              'ValorUnitario' => Tools::ps_round($unit_price, 2),
+              'Descuento' => $set_discount,
+              'Impuestos' => $traslados,
+            );
+
+            if ($product['tax_rate'] == 0) {
+              unset($products_invoice[$in]['Impuestos']);
+            }
+            $in++;
+        }
+
+        if($discount > 0 && $emptyDiscount){
+            return die(json_encode(array('response' => 'error', 'message' => 'El descuento no debe ser mayor al subtotal')));
+        }
+
+        //método para obtener los gastos de envío
+        $data = trim(Tools::getValue('order'));
+        $query = new DbQuery();
+        $query->select('o.id_order, c.shipping_cost_tax_excl, c.shipping_cost_tax_incl');
+        $query->from('orders', 'o');
+        $query->join('LEFT JOIN`'._DB_PREFIX_.'order_carrier` c ON o.`id_order` = c.`id_order`');
+        $query->where('o.reference = "'.pSQL($data).'"');
+
+        if ($result_carrier = Db::getInstance(_PS_USE_SQL_SLAVE_)->executeS($query)) {
+
+            foreach ($result_carrier as $carrier) {
+                $price = (float) $carrier['shipping_cost_tax_excl'];
+                $round = Tools::ps_round($price, 2);
+
+                //impuesto envío
+                if ($carrier['shipping_cost_tax_excl'] == $carrier['shipping_cost_tax_incl']) {
+                  $traslados_carrier = [];
+                }else {
+                  $taxes_carrier[] = array(
+                    'Base' => $carrier['shipping_cost_tax_excl'],
+                    'Impuesto' => '002',
+                    'TipoFactor' => 'Tasa',
+                    'TasaOCuota' => '0.16',
+                    'Importe' => $carrier['shipping_cost_tax_excl'] * .16
+                  );
+                  $traslados_carrier = array('Traslados' => $taxes_carrier);
+                }
+
+                if ($carrier['shipping_cost_tax_excl'] != '0' && !is_null($carrier['shipping_cost_tax_excl'])) {
+                    $products_invoice[] = array(
+                      'ClaveProdServ' => '78102203',
+                      'ClaveUnidad' => 'SX',
+                      'Unidad' => 'Envío',
+                      'Cantidad' => 1,
+                      'Descripcion' => 'Costo de envío',
+                      'ValorUnitario' => $round,
+                      'Impuestos' => $traslados_carrier
+                      );
+
+                      if (count($traslados_carrier) < 1) {
+                        unset($products_invoice[$in]['Impuestos']);
+                      }
+                      $in++;
+                }
+            }
+        }
+
+        // método para obtener el numero en entero de la orden y no la referencia (por si se ocupa)
+        // $data = Tools::getValue('order');
+        //
+        // $sql = 'SELECT id_order FROM '._DB_PREFIX_.'orders WHERE reference="'.$data.'"';
+        // if ($results = Db::getInstance()->executeS($sql)) {
+        //     foreach ($results as $row) {
+        //         $num_order = intval($row['id_order']);
+        //     }
+        // }
+
+        if (Tools::getValue('num_cta') != '') {
+            //$num_cta = intval(Tools::getValue('num_cta'));
+            $num_cta = (int) Tools::getValue('num_cta');
+        } else {
+            $num_cta = '';
+        }
+
+        if ($this->module->send_mail == 0) {
+            $send = false;
+        } else {
+            $send = true;
+        }
+
+        $seriesget = Curls::frontCurl($url_aux . 'series', 'get', $this->module->keyapi, $this->module->keysecret);
+        $decode_series = json_decode($seriesget, true);
+     
+        foreach ($decode_series['data'] as $key => $serie) {
+            
+            if ($serie['SerieName'] == $this->module->serie) {
+                $id_serie = $serie['SerieID'];
+            }
+        }
+        if ($id_serie == '' || $id_serie == null) {
+            return die(json_encode(array('response' => 'error', 'message' => 'La serie con que intentas facturar no existe en tu catálogo de series y folios')));
+        }
+        
+        $params = array(
+                 'Receptor' => array('UID' => Tools::getValue('uid')),
+                 'TipoCfdi' => 'factura',
+                 'Redondeo' => 2,
+                 'Conceptos' => $products_invoice,
+                 'UsoCFDI' => Tools::getValue('usocfdi'),
+                 'Cuenta' => $num_cta,
+                 'MetodoPago' => 'PUE',
+                 'FormaPago' => Tools::getValue('method'),
+                 'Moneda' => 'MXN',
+                 'NumOrder' => Tools::getValue('order'),
+                 'Serie' => $id_serie,
+                 'EnviarCorreo' => $send,
+               );
+        $dataString = json_encode($params);
+        $url_invoice = ($this->module->checkbox_dev == 0) ? $this->module->urlapi40 : $this->module->urlapi40_dev;
+        $url = $url_invoice.'create';
+        $keyapi = $this->module->keyapi;
+        $keysecret = $this->module->keysecret;
+        $request = 'post';
+        
+        //agregar die por cambio en curl
+        return die(Curls::frontCurl($url, $request, $keyapi, $keysecret, $params));
+    }
+
+    public function displayAjaxOrderList()
+    {
+        $response = array();
+     
+        $url_aux = ($this->module->checkbox_dev == 0) ? $this->module->urlapi : $this->module->urlapi_dev;
+        $customerRfc = trim(Tools::getValue('rfc'));
+        $url = $url_aux.'invoices/'.$customerRfc;
+        $keyapi = $this->module->keyapi;
+        $keysecret = $this->module->keysecret;
+        $request = 'get';
+        $raw_response = Curls::frontCurl($url, $request, $keyapi, $keysecret);
+        $orders = json_decode($raw_response);
+        
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            $response[] = array('error' => 'Error decodificando JSON: ' . json_last_error_msg());
+            return die(json_encode($response));
+        }
+        
+        if ($orders && $orders->status != 'error') {
+            foreach ($orders->data as &$order) {
+                if ($order->NumOrder == trim(Tools::getValue('order'))) {
+                    $response[] = array(
+                    'status' => $order->Status,
+                    'UID' => $order->UID,
+                    );
+                }
+            }
+        }
+
+        return die(json_encode($response));
+    }
+ 
+    //método que descarga los archivos de factura
+    public function displayAjaxDownloadFile()
+    {
+      $uid  = Tools::getValue('uid');
+      $type = Tools::getValue('type');
+
+      $url_aux = ($this->module->checkbox_dev == 0) ? $this->module->urlapi40 : $this->module->urlapi40_dev;
+      $url = ($type == 'pdf') ? $url_aux.$uid.'/pdf' : $url_aux.$uid.'/xml' ;
+      $keyapi = $this->module->keyapi;
+      $keysecret = $this->module->keysecret;
+      $request = 'get';
+
+      $response = Curls::frontCurl($url, $request, $keyapi, $keysecret);
+
+      header('Content-type: application/json');
+      $data = array('file' => base64_encode($response));
+
+      echo json_encode($data);
+    }
+
+    //método para el demo, liberar pedido
+    public function displayAjaxUnlockOrder()
+    {
+        $message = array();
+
+        $order = trim(Tools::getValue('order'));
+
+        $sql = 'SELECT id_order
+        FROM '._DB_PREFIX_.'orders WHERE reference="'.pSQL($order).'"';
+
+        if ($results = Db::getInstance()->executeS($sql)) {
+            foreach ($results as $row) {
+                $id_order = $row['id_order'];
+            }
+        }
+
+        $order = new Order($id_order);
+        $order_state = new OrderState(Tools::getValue('id_order_state'));
+
+        $current_order_state = $order->getCurrentOrderState();
+        if ($current_order_state->id != $order_state->id) {
+            // Create new OrderHistory
+            $history = new OrderHistory();
+            $history->id_order = $order->id;
+            $history->id_employee = (int)$this->context->employee->id;
+
+            $use_existings_payment = false;
+            if (!$order->hasInvoice()) {
+                $use_existings_payment = true;
+            }
+            $history->changeIdOrderState((int)$order_state->id, $order, $use_existings_payment);
+
+            $carrier = new Carrier($order->id_carrier, $order->id_lang);
+            $templateVars = array();
+            if ($history->id_order_state == Configuration::get('PS_OS_SHIPPING') && $order->shipping_number) {
+                $templateVars = array('{followup}' => str_replace('@', $order->shipping_number, $carrier->url));
+            }
+
+            // Save all changes
+            if ($history->addWithemail(true, $templateVars)) {
+                // synchronizes quantities if needed..
+                if (Configuration::get('PS_ADVANCED_STOCK_MANAGEMENT')) {
+                    foreach ($order->getProducts() as $product) {
+                        if (StockAvailable::dependsOnStock($product['product_id'])) {
+                            StockAvailable::synchronize($product['product_id'], (int)$product['id_shop']);
+                        }
+                    }
+                }
+                $message[] = array('status' => 'Operación correcta');
+            }
+        }
+        return die(json_encode($message));
+    }
+}
